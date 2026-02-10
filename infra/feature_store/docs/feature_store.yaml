@@ -1,0 +1,19 @@
+project: aiagent_docs
+provider: local
+
+registry:
+  registry_type: sql
+  path: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/feast
+  cache_ttl_seconds: 60
+  sqlalchemy_config_kwargs:
+    echo: false
+    pool_pre_ping: true
+
+online_store:
+  type: milvus
+  host: "tcp://localhost"
+  port: "19530"
+  vector_enabled: true
+  embedding_dim: 768
+  index_type: "FLAT"
+  metric_type: "COSINE"

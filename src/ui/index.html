@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI Chat (SSE)</title>
+  <style>
+    :root{
+      --bg:#0b0f14;
+      --panel:#111827;
+      --panel2:#0f172a;
+      --text:#e5e7eb;
+      --muted:#94a3b8;
+      --border:rgba(255,255,255,.08);
+      --accent:#60a5fa;
+      --danger:#ef4444;
+      --ok:#22c55e;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+      --radius: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    }
+    *{ box-sizing:border-box; }
+    html,body{ height:100%; background:var(--bg); color:var(--text); font-family:var(--sans); margin:0; }
+    .app{ height:100%; display:flex; align-items:center; justify-content:center; padding:18px; }
+    .shell{
+      width:min(980px, 100%);
+      height:min(880px, 100%);
+      display:flex;
+      flex-direction:column;
+      border:1px solid var(--border);
+      background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      overflow:hidden;
+    }
+    header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding:14px 16px;
+      border-bottom:1px solid var(--border);
+      background:rgba(17,24,39,.7);
+      backdrop-filter: blur(8px);
+    }
+    header .title{ display:flex; flex-direction:column; gap:2px; }
+    header h1{ font-size:14px; margin:0; font-weight:650; letter-spacing:.2px; }
+    header .sub{ font-size:12px; color:var(--muted); }
+    header .actions{ display:flex; gap:10px; align-items:center; }
+    button{
+      border:1px solid var(--border);
+      background:rgba(255,255,255,.03);
+      color:var(--text);
+      padding:8px 10px;
+      border-radius:10px;
+      cursor:pointer;
+      font-size:12px;
+    }
+    button:hover{ border-color:rgba(255,255,255,.16); }
+    button.danger{ border-color:rgba(239,68,68,.35); }
+    button.danger:hover{ border-color:rgba(239,68,68,.65); }
+    .status{ font-size:12px; color:var(--muted); display:flex; align-items:center; gap:8px; }
+    .dot{ width:8px; height:8px; border-radius:999px; background:rgba(148,163,184,.5); }
+    .dot.ok{ background:rgba(34,197,94,.8); }
+    .dot.busy{ background:rgba(96,165,250,.9); }
+    .dot.err{ background:rgba(239,68,68,.85); }
+    .pill{
+      font-family:var(--mono);
+      font-size:10px;
+      border:1px solid var(--border);
+      padding:2px 6px;
+      border-radius:999px;
+      color:var(--muted);
+    }
+
+    .main{ flex:1; display:flex; flex-direction:column; background:rgba(15,23,42,.4); position:relative; }
+    .messages{
+      flex:1;
+      overflow:auto;
+      padding:18px 16px 10px;
+      /* IMPORTANT: smooth scrolling makes token-stream feel "sticky" */
+      scroll-behavior:auto;
+      overscroll-behavior: contain;
+    }
+
+    .jump{
+      position:absolute;
+      right:16px;
+      bottom:86px;
+      padding:10px 12px;
+      border-radius:999px;
+      border:1px solid rgba(96,165,250,.35);
+      background:rgba(96,165,250,.14);
+      display:none;
+      gap:8px;
+      align-items:center;
+      cursor:pointer;
+      font-size:12px;
+      box-shadow: 0 8px 18px rgba(0,0,0,.35);
+    }
+    .jump.show{ display:flex; }
+
+    .bubble{
+      max-width: 78%;
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:10px 12px;
+      margin:10px 0;
+      line-height:1.45;
+      white-space:pre-wrap;
+      word-wrap:break-word;
+    }
+    .row{ display:flex; gap:10px; align-items:flex-end; }
+    .row.user{ justify-content:flex-end; }
+    .row.user .bubble{ background:rgba(96,165,250,.12); border-color:rgba(96,165,250,.25); }
+    .row.assistant{ justify-content:flex-start; }
+    .row.assistant .bubble{ background:rgba(255,255,255,.03); }
+    .meta{
+      font-size:11px;
+      color:var(--muted);
+      margin-top:4px;
+      display:flex;
+      gap:10px;
+      justify-content:flex-end;
+    }
+    .row.assistant .meta{ justify-content:flex-start; }
+
+    .composer{
+      border-top:1px solid var(--border);
+      padding:12px;
+      background:rgba(17,24,39,.65);
+      display:flex;
+      gap:10px;
+      align-items:flex-end;
+    }
+    textarea{
+      flex:1;
+      resize:none;
+      height:48px;
+      max-height:140px;
+      border-radius:12px;
+      border:1px solid var(--border);
+      background:rgba(0,0,0,.22);
+      color:var(--text);
+      padding:10px 12px;
+      outline:none;
+      font-family:var(--sans);
+      font-size:13px;
+      line-height:1.4;
+    }
+    textarea:focus{ border-color:rgba(96,165,250,.5); }
+    .send{
+      padding:10px 14px;
+      border-radius:12px;
+      border:1px solid rgba(96,165,250,.35);
+      background:rgba(96,165,250,.14);
+      font-weight:600;
+    }
+    .send:hover{ border-color:rgba(96,165,250,.65); }
+    .send:disabled{ opacity:.55; cursor:not-allowed; }
+
+    .hint{ padding:0 12px 12px; font-size:12px; color:var(--muted); }
+    .kbd{
+      border:1px solid var(--border);
+      border-bottom-color:rgba(255,255,255,.16);
+      background:rgba(255,255,255,.03);
+      padding:1px 6px;
+      border-radius:6px;
+      font-family:var(--mono);
+      font-size:11px;
+      color:var(--muted);
+    }
+    .errorBox{
+      border:1px solid rgba(239,68,68,.35);
+      background:rgba(239,68,68,.08);
+      color:#fecaca;
+      padding:10px 12px;
+      border-radius:12px;
+      margin:10px 0;
+      font-size:13px;
+      white-space:pre-wrap;
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="shell">
+    <header>
+      <div class="title">
+        <h1>AI Chat (SSE streaming)</h1>
+        <div class="sub">Endpoint: <span class="pill" id="endpointPill"></span></div>
+      </div>
+      <div class="actions">
+        <div class="status">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">Idle</span>
+        </div>
+        <button class="danger" id="clearBtn">Clear history</button>
+      </div>
+    </header>
+
+    <div class="main">
+      <div class="messages" id="messages"></div>
+      <div class="jump" id="jumpBtn">⬇ Jump to latest</div>
+
+      <div class="hint">
+        Enter để gửi • <span class="kbd">Shift</span>+<span class="kbd">Enter</span> xuống dòng • Lịch sử lưu ở localStorage
+      </div>
+
+      <div class="composer">
+        <textarea id="input" placeholder="Nhập câu hỏi..."></textarea>
+        <button class="send" id="sendBtn">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API_BASE = "http://localhost:8005";            // "" => same origin
+  const STREAM_ENDPOINT = "/streaming";
+  const STORAGE_KEY = "ai_chat_history_v2";
+  const MAX_HISTORY = 200;
+
+  const elMessages = document.getElementById("messages");
+  const elInput = document.getElementById("input");
+  const elSend = document.getElementById("sendBtn");
+  const elClear = document.getElementById("clearBtn");
+  const elStatusText = document.getElementById("statusText");
+  const elStatusDot = document.getElementById("statusDot");
+  const elEndpointPill = document.getElementById("endpointPill");
+  const elJump = document.getElementById("jumpBtn");
+
+  elEndpointPill.textContent = (API_BASE || location.origin) + STREAM_ENDPOINT;
+
+  let history = loadHistory();
+  let streaming = false;
+  let currentAssistantId = null;
+  let currentEventSource = null;
+
+  // whether user is "pinned" to bottom (like GPT)
+  let pinnedToBottom = true;
+  let unseenWhileUp = 0;
+
+  function nowIso(){ return new Date().toISOString(); }
+  function uuid(){ return crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now(); }
+
+  function setStatus(kind, text){
+    elStatusText.textContent = text;
+    elStatusDot.classList.remove("ok","busy","err");
+    if(kind === "ok") elStatusDot.classList.add("ok");
+    else if(kind === "busy") elStatusDot.classList.add("busy");
+    else if(kind === "err") elStatusDot.classList.add("err");
+  }
+
+  function saveHistory(){
+    try{
+      const trimmed = history.slice(-MAX_HISTORY);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+    }catch(e){}
+  }
+  function loadHistory(){
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }catch(e){ return []; }
+  }
+
+  function escapeHtml(str){
+    return String(str)
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;");
+  }
+
+  function isNearBottom(){
+    const t = elMessages;
+    const gap = t.scrollHeight - t.scrollTop - t.clientHeight;
+    return gap < 120;
+  }
+
+  function maybeScrollToBottom(){
+    if(pinnedToBottom){
+      elMessages.scrollTop = elMessages.scrollHeight;
+    } else {
+      // user is reading above -> show jump button
+      elJump.classList.add("show");
+      unseenWhileUp += 1;
+      elJump.textContent = unseenWhileUp > 0 ? `⬇ Jump to latest (${unseenWhileUp})` : "⬇ Jump to latest";
+    }
+  }
+
+  function forceScrollToBottom(){
+    pinnedToBottom = true;
+    unseenWhileUp = 0;
+    elJump.classList.remove("show");
+    elMessages.scrollTop = elMessages.scrollHeight;
+  }
+
+  function render(){
+    elMessages.innerHTML = "";
+    for(const msg of history){
+      elMessages.appendChild(renderMessage(msg));
+    }
+    // after render we pin to bottom
+    forceScrollToBottom();
+  }
+
+  function renderMessage(msg){
+    const wrap = document.createElement("div");
+
+    const row = document.createElement("div");
+    row.className = "row " + (msg.role === "user" ? "user" : "assistant");
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.dataset.mid = msg.id;
+    bubble.innerHTML = escapeHtml(msg.content || "");
+    row.appendChild(bubble);
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const role = document.createElement("span");
+    role.className = "pill";
+    role.textContent = msg.role;
+    const time = document.createElement("span");
+    time.textContent = new Date(msg.ts).toLocaleString();
+    meta.appendChild(role);
+    meta.appendChild(time);
+
+    wrap.appendChild(row);
+    wrap.appendChild(meta);
+    return wrap;
+  }
+
+  function upsertMessage(id, patch){
+    const idx = history.findIndex(m => m.id === id);
+    if(idx === -1) history.push(patch);
+    else history[idx] = { ...history[idx], ...patch };
+    saveHistory();
+  }
+
+  function appendMessage(role, content){
+    const msg = { id: uuid(), role, content: content || "", ts: nowIso() };
+    history.push(msg);
+    saveHistory();
+    elMessages.appendChild(renderMessage(msg));
+    maybeScrollToBottom();
+    return msg.id;
+  }
+
+  function updateAssistantContent(id, content){
+    upsertMessage(id, { content });
+    const bubble = elMessages.querySelector(`.bubble[data-mid="${CSS.escape(id)}"]`);
+    if(bubble) bubble.innerHTML = escapeHtml(content || "");
+    // Only attempt auto-scroll if pinnedToBottom
+    maybeScrollToBottom();
+  }
+
+  function appendErrorBox(text){
+    const box = document.createElement("div");
+    box.className = "errorBox";
+    box.textContent = text;
+    elMessages.appendChild(box);
+    maybeScrollToBottom();
+  }
+
+  // Track user's scroll intent:
+  // If user scrolls up -> pinnedToBottom=false
+  // If user returns near bottom -> pinnedToBottom=true and hide jump
+  elMessages.addEventListener("scroll", () => {
+    const near = isNearBottom();
+    if(near){
+      pinnedToBottom = true;
+      unseenWhileUp = 0;
+      elJump.classList.remove("show");
+    } else {
+      pinnedToBottom = false;
+    }
+  });
+
+  elJump.addEventListener("click", () => forceScrollToBottom());
+
+  function startStream(question, {session_id=null, user_id=null}={}){
+    if(streaming) return;
+    streaming = true;
+    setStatus("busy", "Streaming...");
+    elSend.disabled = true;
+    elInput.disabled = true;
+
+    appendMessage("user", question);
+    currentAssistantId = appendMessage("assistant", "");
+    let acc = "";
+
+    const u = new URL((API_BASE || location.origin) + STREAM_ENDPOINT);
+    u.searchParams.set("q", question);
+    if(session_id) u.searchParams.set("session_id", session_id);
+    if(user_id) u.searchParams.set("user_id", user_id);
+
+    const es = new EventSource(u.toString());
+    currentEventSource = es;
+
+    es.addEventListener("token", (e) => {
+      try{
+        const payload = JSON.parse(e.data);
+        const t = payload?.text ?? "";
+        acc += String(t);
+        updateAssistantContent(currentAssistantId, acc);
+      }catch(_){}
+    });
+
+    es.addEventListener("final", (e) => {
+      try{
+        const payload = JSON.parse(e.data);
+        const t = payload?.text ?? acc;
+        acc = String(t);
+        updateAssistantContent(currentAssistantId, acc);
+      }catch(_){}
+      cleanupStream("ok", "Done");
+    });
+
+    // If server sends event:error with JSON, browsers still also may call "error" handler.
+    es.addEventListener("error", () => {
+      cleanupStream("err", "Error");
+      appendErrorBox("SSE error / Network issue. Check console & server logs.");
+      try{ es.close(); }catch(_){}
+    });
+  }
+
+  function cleanupStream(kind, text){
+    streaming = false;
+    setStatus(kind, text);
+    elSend.disabled = false;
+    elInput.disabled = false;
+    elInput.focus();
+
+    if(currentEventSource){
+      try{ currentEventSource.close(); }catch(_){}
+      currentEventSource = null;
+    }
+    currentAssistantId = null;
+  }
+
+  elSend.addEventListener("click", () => {
+    const q = elInput.value.trim();
+    if(!q) return;
+    elInput.value = "";
+    startStream(q);
+  });
+
+  elInput.addEventListener("keydown", (e) => {
+    if(e.key === "Enter" && !e.shiftKey){
+      e.preventDefault();
+      elSend.click();
+    }
+  });
+
+  elClear.addEventListener("click", () => {
+    if(streaming && currentEventSource){
+      try{ currentEventSource.close(); }catch(_){}
+      streaming = false;
+    }
+    history = [];
+    saveHistory();
+    render();
+    setStatus("ok", "Cleared");
+  });
+
+  // INIT
+  render();
+  setStatus("ok", "Idle");
+  elInput.focus();
+</script>
+</body>
+</html>

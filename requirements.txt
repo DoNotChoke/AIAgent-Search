@@ -1,0 +1,12 @@
+langchain
+langchain-community
+langchain-openai
+langchain-agent
+fastmcp
+crawl4ai
+minio
+feast
+fastembed
+sentence-transformers
+langchain-mcp-adapters==0.2.1
+langfuse
