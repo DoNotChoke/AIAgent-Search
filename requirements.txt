@@ -10,3 +10,7 @@ fastembed
 sentence-transformers
 langchain-mcp-adapters==0.2.1
 langfuse
+aiokafka
+redis
+pymilvus
+psycopg2-binary

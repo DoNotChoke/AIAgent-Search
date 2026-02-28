@@ -7,7 +7,6 @@ from storage.utils import stable_doc_id
 from dataclasses import dataclass
 
 
-
 @dataclass
 class Chunk:
     chunk_id: str

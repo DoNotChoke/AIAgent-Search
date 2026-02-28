@@ -42,7 +42,6 @@ def docs_search(query: str, k: int) -> str:
         results.append({
             "score": h.score,
             "chunk_id": h.chunk_id,
-            "s3_uri": h.s3_uri,
             "url": (h.fields or {}).get("url"),
             "doc_id": (h.fields or {}).get("doc_id"),
             "retrieved_at": (h.fields or {}).get("retrieved_at"),

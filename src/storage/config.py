@@ -20,8 +20,7 @@ class Config:
     prefix: str
     recursive: bool = True
 
-    feature_view_name_docs: str = "docs_embeddings"
-    feature_view_name_cache: str = "semantic_cache"
+    feature_view_name: str = "docs_embeddings"
 
     # FeatureView
     url_col: str = "url"
@@ -31,6 +30,8 @@ class Config:
     s3_uri_col: str = "s3_uri"
     retrieved_at_col: str = "retrieved_at"
     ts_col: str = "event_timestamp"
+
+    redis_url: str = "redis://localhost:6378"
 
 
 config = Config(

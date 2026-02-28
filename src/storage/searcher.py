@@ -1,3 +1,4 @@
+import re
 from feast import FeatureStore
 
 from dataclasses import dataclass
@@ -50,7 +51,6 @@ def fetch_chunk_texts_from_jsonl(
 class SearchHit:
     score: float
     chunk_id: str
-    s3_uri: str
     fields: Dict[str, Any]
     text: str
 
@@ -73,11 +73,11 @@ class NeuralSearcher:
         self.store = FeatureStore(cfg.feast_docs_repo)
         self.normalize_embeddings = normalize_embeddings
         if return_fields is None:
-            return_fields = ["chunk_id", "doc_id", "url", "s3_uri", "retrieved_at"]
+            return_fields = ["doc_id", "url", "s3_uri", "retrieved_at"]
         self.return_fields = list(return_fields)
-        self.feature_view_name = cfg.feature_view_name_docs
-        self.features = [f"{cfg.feature_view_name_docs}:{cfg.embedding_col}"] + [
-            f"{cfg.feature_view_name_docs}:{f}" for f in self.return_fields
+        self.feature_view_name = cfg.feature_view_name
+        self.features = [f"{cfg.feature_view_name}:{cfg.embedding_col}"] + [
+            f"{cfg.feature_view_name}:{f}" for f in self.return_fields
         ]
         self.embedding_model = embedding_model
         self.distance_metric = distance_metric
@@ -110,7 +110,7 @@ class NeuralSearcher:
             top_k=k,
             distance_metric=self.distance_metric
         ).to_df()
-
+        print(list(res.columns))
         score_col = None
         for cand in ("distance", "score", "similarity"):
             if cand in res.columns:
@@ -119,9 +119,8 @@ class NeuralSearcher:
 
         interim: List[Dict[str, Any]] = []
         for _, row in res.iterrows():
-            chunk_id = self.get_df_value(row, res.columns, self.config.chunk_id_col)
-            s3_uri = self.get_df_value(row, res.columns, self.config.s3_uri_col)
-            if chunk_id is None or s3_uri is None:
+            chunk_id = row[self.config.chunk_id_col]
+            if chunk_id is None:
                 continue
             fields: Dict[str, Any] = {}
             for f in self.return_fields:
@@ -131,7 +130,6 @@ class NeuralSearcher:
             interim.append({
                 "score": score,
                 "chunk_id": str(chunk_id),
-                "s3_uri": str(s3_uri),
                 "fields": fields,
             })
 
@@ -140,7 +138,13 @@ class NeuralSearcher:
 
         s3_to_chunk_ids: Dict[str, Set[str]] = {}
         for it in interim:
-            s3_to_chunk_ids.setdefault(it["s3_uri"], set()).add(it["chunk_id"])
+            chunk_id = it["chunk_id"]
+
+            base_id = re.sub(r"_\d+$", "", chunk_id)
+
+            s3_uri = f"s3://chunk-docs/web/{base_id}.jsonl"
+
+            s3_to_chunk_ids.setdefault(s3_uri, set()).add(chunk_id)
 
         chunk_text_map: Dict[str, str] = {}
         for s3_uri, cids in s3_to_chunk_ids.items():
@@ -152,7 +156,6 @@ class NeuralSearcher:
             out.append(SearchHit(
                 score=it["score"],
                 chunk_id=cid,
-                s3_uri=it["s3_uri"],
                 fields=it["fields"],
                 text=chunk_text_map.get(cid, ""),
             ))

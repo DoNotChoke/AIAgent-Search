@@ -79,9 +79,9 @@
       flex:1;
       overflow:auto;
       padding:18px 16px 10px;
-      /* IMPORTANT: smooth scrolling makes token-stream feel "sticky" */
       scroll-behavior:auto;
       overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch; /* iOS momentum scroll */
     }
 
     .jump{
@@ -238,7 +238,7 @@
   let currentAssistantId = null;
   let currentEventSource = null;
 
-  // whether user is "pinned" to bottom (like GPT)
+  // "Pinned" means: auto-scroll to bottom only when user is near bottom.
   let pinnedToBottom = true;
   let unseenWhileUp = 0;
 
@@ -281,11 +281,17 @@
     return gap < 120;
   }
 
+  function scheduleScrollToBottom(){
+    // scroll after DOM paints
+    requestAnimationFrame(() => {
+      elMessages.scrollTop = elMessages.scrollHeight;
+    });
+  }
+
   function maybeScrollToBottom(){
     if(pinnedToBottom){
-      elMessages.scrollTop = elMessages.scrollHeight;
+      scheduleScrollToBottom();
     } else {
-      // user is reading above -> show jump button
       elJump.classList.add("show");
       unseenWhileUp += 1;
       elJump.textContent = unseenWhileUp > 0 ? `⬇ Jump to latest (${unseenWhileUp})` : "⬇ Jump to latest";
@@ -296,16 +302,25 @@
     pinnedToBottom = true;
     unseenWhileUp = 0;
     elJump.classList.remove("show");
-    elMessages.scrollTop = elMessages.scrollHeight;
+    scheduleScrollToBottom();
   }
 
+  // Key change: DO NOT force scroll on render.
+  // If user previously scrolled up, keep their position.
   function render(){
+    const wasNearBottom = isNearBottom();
     elMessages.innerHTML = "";
     for(const msg of history){
       elMessages.appendChild(renderMessage(msg));
     }
-    // after render we pin to bottom
-    forceScrollToBottom();
+    if(wasNearBottom){
+      pinnedToBottom = true;
+      forceScrollToBottom();
+    } else {
+      pinnedToBottom = false;
+      // keep current scrollTop as-is (browser will keep it mostly stable)
+      elJump.classList.add("show");
+    }
   }
 
   function renderMessage(msg){
@@ -355,7 +370,6 @@
     upsertMessage(id, { content });
     const bubble = elMessages.querySelector(`.bubble[data-mid="${CSS.escape(id)}"]`);
     if(bubble) bubble.innerHTML = escapeHtml(content || "");
-    // Only attempt auto-scroll if pinnedToBottom
     maybeScrollToBottom();
   }
 
@@ -367,9 +381,7 @@
     maybeScrollToBottom();
   }
 
-  // Track user's scroll intent:
-  // If user scrolls up -> pinnedToBottom=false
-  // If user returns near bottom -> pinnedToBottom=true and hide jump
+  // Track user's scroll intent
   elMessages.addEventListener("scroll", () => {
     const near = isNearBottom();
     if(near){
@@ -421,7 +433,6 @@
       cleanupStream("ok", "Done");
     });
 
-    // If server sends event:error with JSON, browsers still also may call "error" handler.
     es.addEventListener("error", () => {
       cleanupStream("err", "Error");
       appendErrorBox("SSE error / Network issue. Check console & server logs.");

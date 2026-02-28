@@ -7,15 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from feast import FeatureStore
 from langchain.agents import create_agent
+from langchain_redis import RedisSemanticCache
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_core.globals import set_llm_cache
 
 from contextlib import asynccontextmanager
 
-from sentence_transformers import SentenceTransformer
 
 from agent.generator import AgentGeneratorService
 from storage.caching import SemanticCache
 from storage.config import config
-from storage.utils import get_minio_client
 from tools.mcp_tools import get_docs_tools, get_web_tools
 
 from typing import Optional
@@ -30,30 +31,27 @@ async def lifespan(app: FastAPI):
     web_tools = await get_web_tools(stateful=False)
     tools = docs_tools + web_tools
 
-    store = FeatureStore(repo_path=config.feast_cache_repo)
-    minio = get_minio_client(
-        config.minio_endpoint,
-        config.minio_access_key,
-        config.minio_secret_key,
-        config.minio_secure
-    )
-    encoder = SentenceTransformer("BAAI/bge-small-en-v1.5")
-    cache = SemanticCache(store=store, encoder=encoder, threshold=0.8, minio_client=minio)
+    redis_url = config.redis_url
+    embeddings = SentenceTransformerEmbeddings(model_name="redis/langcache-embed-v2")
+    semantic_cache = SemanticCache(redis_url, embeddings)
 
     agent = create_agent(
         model="gpt-5-mini",
         tools=tools,
     )
 
-    app.state.svc = AgentGeneratorService(agent=agent, cache=cache)
+    app.state.svc = AgentGeneratorService(agent=agent, cache=semantic_cache)
 
     yield
 
+
 app = FastAPI(lifespan=lifespan)
+
 
 @app.get("/health")
 async def health():
     return {"ok": True}
+
 
 @app.get("/streaming")
 async def rag_stream(
@@ -88,6 +86,7 @@ async def rag_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
 
 app.add_middleware(
     CORSMiddleware,

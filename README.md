@@ -105,11 +105,6 @@ cd feature_store
 cd docs
 feast apply
 ```
-```bash
-cd feature_store
-cd semantic
-feast apply
-```
 Access Langfuse (localhost:3000), create a new project and new API key (Public key, Secret key).
 ![Architecture](./images/langfuse-api.png)
 
@@ -150,8 +145,8 @@ python -m storage.consumer
 ```
 ### 6) Create prompt
 Access Langfuse (localhost:3000) then create a new prompt with type chat.
-![Architecture](./images/langfuse-api.png)
-![Architecture](./images/langfuse-api.png)
+![Architecture](./images/langfuse-prompt-01.png)
+![Architecture](./images/langfuse-prompt-02.png)
 
 ### 7) Run service
 

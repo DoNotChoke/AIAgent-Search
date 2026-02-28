@@ -1,15 +1,14 @@
 import contextlib
 import json
 import asyncio
+from typing import List, Optional, Dict, Any, AsyncGenerator
 
 from langchain_core.runnables import Runnable
 from langchain_core.messages import BaseMessage
 from langfuse import observe, get_client
 from langfuse.langchain import CallbackHandler
 
-from typing import List, Optional, Dict, Any, AsyncGenerator
-
-from storage.caching import SemanticCache, CacheHit
+from storage.caching import SemanticCache
 
 
 def sse_event(event: str, data: Dict[str, Any]) -> str:
@@ -38,6 +37,7 @@ async def _stream_words_as_sse(text: str, delay_sec: float = 0.0):
         yield chunk
         if delay_sec > 0:
             await asyncio.sleep(delay_sec)
+
 
 class AgentGeneratorService:
     def __init__(
@@ -74,14 +74,12 @@ class AgentGeneratorService:
         messages: List[BaseMessage] = self.prompt.get_langchain_prompt(question=question)
         return {"messages": messages}
 
-    def cache_lookup(self, question: str) -> Optional[CacheHit]:
+    def cache_lookup(self, question: str) -> Optional[str]:
         if not self.cache:
             return None
         try:
-            hit = self.cache.search_cache(question)
-            if not hit.hit:
-                return None
-            return hit
+            # Expect SemanticCache.search_cache() returns plain text
+            return self.cache.search_cache(question)
         except Exception:
             return None
 
@@ -95,7 +93,7 @@ class AgentGeneratorService:
 
         async with self.cache_write_lock:
             try:
-                await asyncio.to_thread(self.cache.upload_to_cache, question, answer)
+                await asyncio.to_thread(self.cache.cache_message, question, answer)
             except Exception:
                 pass
 
@@ -107,13 +105,12 @@ class AgentGeneratorService:
         user_id: Optional[str] = None,
     ) -> str:
         self.update_trace_context(session_id=session_id, user_id=user_id)
-        # Check from cache
-        hit = self.cache_lookup(question)
-        if hit is not None:
-            return _as_text(getattr(hit, "answer", ""))
+
+        cached = self.cache_lookup(question)
+        if cached:
+            return cached
 
         handler = CallbackHandler()
-
         out = await self.agent.ainvoke(
             self.make_inputs(question),
             config={"callbacks": [handler]},
@@ -147,24 +144,15 @@ class AgentGeneratorService:
             },
         )
 
-        hit = self.cache_lookup(question)
-        if hit is not None:
-            meta = getattr(hit, "meta", None) or {}
-            yield sse_event(
-                "cache_hit",
-                {
-                    "similarity": float(getattr(hit, "similarity", 0.0) or 0.0),
-                    **({"meta": meta} if meta else {}),
-                },
-            )
-            answer = _as_text(getattr(hit, "answer", ""))
-            if answer:
-                async for w in _stream_words_as_sse(answer, delay_sec=0.1):
-                    yield sse_event("token", {"text": w})
-
-            yield sse_event("final", {"text": answer})
+        # cache hit => stream from cached final text
+        cached = self.cache_lookup(question)
+        if cached:
+            cached_text = _as_text(cached)
+            # stream words
+            async for w in _stream_words_as_sse(cached_text, delay_sec=0.02):
+                yield sse_event("token", {"text": w})
+            yield sse_event("final", {"text": cached_text})
             return
-
 
         handler = CallbackHandler()
         inputs = self.make_inputs(question)
@@ -180,17 +168,16 @@ class AgentGeneratorService:
 
         ping_task = asyncio.create_task(ping_loop())
 
-        final_parts: List[str] = []
+        # We'll stream tokens for UI, but cache ONLY the final assistant message captured at end.
+        streamed_parts: List[str] = []
+        final_answer: str = ""
 
         try:
             if hasattr(self.agent, "astream_events"):
                 async for ev in self.agent.astream_events(
                     inputs,
                     version="v2",
-                    config={
-                        "callbacks": [handler],
-                        "recursion_limit": 50,
-                    },
+                    config={"callbacks": [handler], "recursion_limit": 50},
                 ):
                     while ping_queue:
                         yield ping_queue.pop(0)
@@ -198,25 +185,28 @@ class AgentGeneratorService:
                     etype = ev.get("event")
                     data = ev.get("data") or {}
 
+                    # stream tokens
                     if etype in ("on_chat_model_stream", "on_llm_stream"):
                         chunk = data.get("chunk")
                         if chunk is not None:
-                            text = _as_text(getattr(chunk, "content", ""))
-                            if text:
-                                final_parts.append(text)
-                                yield sse_event("token", {"text": text})
+                            t = _as_text(getattr(chunk, "content", ""))
+                            if t:
+                                streamed_parts.append(t)
+                                yield sse_event("token", {"text": t})
                         continue
 
+                    # capture final output message for caching
                     if etype in ("on_chain_end", "on_agent_end"):
                         out = data.get("output") or data.get("outputs") or {}
                         if isinstance(out, dict) and "messages" in out and out["messages"]:
                             last = out["messages"][-1]
-                            text = _as_text(getattr(last, "content", ""))
-                            if text and not final_parts:
-                                final_parts.append(text)
+                            t = _as_text(getattr(last, "content", ""))
+                            if t:
+                                final_answer = t
                         continue
-
             else:
+                # fallback: astream (may be cumulative)
+                prev_full = ""
                 async for chunk in self.agent.astream(
                     inputs,
                     config={"callbacks": [handler], "recursion_limit": 50},
@@ -226,18 +216,32 @@ class AgentGeneratorService:
 
                     if isinstance(chunk, dict) and "messages" in chunk and chunk["messages"]:
                         last = chunk["messages"][-1]
-                        text = _as_text(getattr(last, "content", ""))
+                        full = _as_text(getattr(last, "content", ""))
                     elif hasattr(chunk, "content"):
-                        text = _as_text(getattr(chunk, "content", ""))
+                        full = _as_text(getattr(chunk, "content", ""))
                     else:
-                        text = _as_text(chunk)
+                        full = _as_text(chunk)
 
-                    if text:
-                        final_parts.append(text)
-                        yield sse_event("token", {"text": text})
+                    if not full:
+                        continue
 
-            answer = "".join(final_parts)
-            yield sse_event("final", {"text": "".join(final_parts)})
+                    # delta streaming if cumulative
+                    if full.startswith(prev_full):
+                        delta = full[len(prev_full):]
+                    else:
+                        delta = full
+                    prev_full = full
+
+                    if delta:
+                        streamed_parts.append(delta)
+                        yield sse_event("token", {"text": delta})
+
+                final_answer = prev_full
+
+            # IMPORTANT: cache only final_answer (last assistant message), not streamed_parts
+            answer = (final_answer.strip() if final_answer else "".join(streamed_parts)).strip()
+
+            yield sse_event("final", {"text": answer})
             asyncio.create_task(self.cache_upload(question, answer))
 
         except Exception as e:
